@@ -1,0 +1,895 @@
+###Load following Packages###
+library(shiny)
+library(shinystan)
+library(ggplot2)
+library(bayesplot)
+library(priorsense)
+library(rstan)
+library(priorsense)
+###########################################
+
+########Stan Code for NOTED Distribution#####
+
+Noted<-'functions {
+  real NOTED_log_lpdf(real z, real nu, real w, real lam) {
+    if (z <= 0 || nu <= 0 || w <= 0 || lam <= 0) {
+        return negative_infinity();  // Ensure valid inputs
+    }
+    real term1 = log(nu) + log(w) + log(lam) + w * log1p(nu) - lam * z;
+    real term2 = (w - 1) * log1m_exp(-lam * z);
+    real term3 = (w + 1) * log1p(nu - exp(-lam * z));
+    return term1 + term2 - term3;
+  }
+real NOTED_rng(real nu, real w, real lam) {
+    real u = uniform_rng(0, 1);
+    real term1 = -(1 / lam);
+    real term2 = 1 - pow(u / pow((1 + nu), w), 1 / w) * (nu + 1);
+    real term3 = 1 - pow(u / pow((1 + nu), w), 1 / w);
+    real d = term1 * log(term2 / term3);
+    return d;
+  }
+}
+
+data {
+  int<lower=0> N;
+  vector[N] z;
+}
+
+parameters {
+  real<lower=0> nu;
+  real<lower=0> lam;
+  real<lower=0> w;
+}
+
+model {
+  for (i in 1:N) {
+    target += NOTED_log_lpdf(z[i] | nu, w, lam);
+  }
+nu~gamma(1.5,10);  
+  w ~ gamma(0.5,0.5);
+  lam ~ gamma(0.5,0.5);
+}
+generated quantities {
+  vector[N] log_lik;
+  vector[N] y_rep;
+  
+  for (i in 1:N) {
+    log_lik[i] = NOTED_log_lpdf(z[i] | nu, w, lam);  // Corrected log-likelihood computation
+    y_rep[i] = NOTED_rng(nu, w, lam);  // Posterior predictive samples
+  }
+}'
+
+###For Sensitivity Analysis ###
+
+Noted3<-'functions {
+  real NOTED_log_lpdf(real z, real nu, real w, real lam) {
+    if (z <= 0 || nu <= 0 || w <= 0 || lam <= 0) {
+        return negative_infinity();  // Ensure valid inputs
+    }
+    real term1 = log(nu) + log(w) + log(lam) + w * log1p(nu) - lam * z;
+    real term2 = (w - 1) * log1m_exp(-lam * z);
+    real term3 = (w + 1) * log1p(nu - exp(-lam * z));
+    return term1 + term2 - term3;
+  }
+real NOTED_rng(real nu, real w, real lam) {
+    real u = uniform_rng(0, 1);
+    real term1 = -(1 / lam);
+    real term2 = 1 - pow(u / pow((1 + nu), w), 1 / w) * (nu + 1);
+    real term3 = 1 - pow(u / pow((1 + nu), w), 1 / w);
+    real d = term1 * log(term2 / term3);
+    return d;
+  }
+}
+
+data {
+  int<lower=0> N;
+  vector[N] z;
+}
+
+parameters {
+  real<lower=0> nu;
+  real<lower=0> lam;
+  real<lower=0> w;
+}
+
+model {
+  for (i in 1:N) {
+    target += NOTED_log_lpdf(z[i] | nu, w, lam);
+  }
+nu~gamma(1.5,10);  
+  w ~ gamma(0.5,0.5);
+  lam ~ gamma(0.5,0.5);
+}
+generated quantities {
+  vector[N] log_lik;
+  real lprior;
+  for (i in 1:N) {
+    log_lik[i] = NOTED_log_lpdf(z[i] | nu, w, lam);  // Corrected log-likelihood computation
+    lprior = gamma_lpdf(nu |1.5,10)+  // Correct shape and scale for nu
+         gamma_lpdf(w |0.5, 0.5) +  // Correct shape and scale for w
+         gamma_lpdf(lam |0.5, 0.5);  // Correct shape and scale for lam
+  }
+}'
+# Data list for Stan
+z<-c(83, 51, 87, 60, 28, 95, 8, 27, 28, 56, 8, 25, 68, 146, 89, 18,
+     73, 69, 9, 37, 10, 82, 29, 8, 60, 61, 61, 18, 169, 25, 8, 26,
+     11, 83, 11, 42, 17, 14, 9, 12, 15, 10, 18, 16, 29, 54, 91, 8,
+     17, 55, 10, 35, 47, 77, 36, 17, 21, 36, 18, 40, 10, 7, 34, 27)
+
+data_list <- list(
+  N = length(z),
+  z = z
+)
+
+
+fit<- stan(model_code = Noted,data = data_list, 
+              iter = 10000,chains = 4,seed=1234)
+
+results = round(summary(model1,pars=c("nu","w","lam"))$summary[,c(1,2,3,4,8,9,10)],4)
+print(results)
+
+#$$$$$$$$$$$$$$$$ Table creation of output *******
+
+tab<- summary(fit, pars=c("nu","w","lam","lp__"), chain=0, 
+              probs = c(0.5, 0.025, 0.975), digits = 4)$summary
+tab<- round(tab, 4)
+tab<- as.data.frame(tab, keep.rownames= c("nu","w","lam", "log Likelihood"))
+tab
+rownames(tab) <- c("$\\nu$", "$\\omega$", "$\\lambda$", "log Likelihood")
+library(knitr)
+latex_code <-kable(tab, format = "latex", booktabs = TRUE, escape = FALSE)
+cat(latex_code)
+##########Convergence Summary####
+# Get per-chain sampler statistics
+sampler_params <- get_sampler_params(fit, inc_warmup = FALSE)
+
+# Convert to summary
+summary_list <- lapply(sampler_params, function(chain) {
+  data.frame(
+    accept_stat = mean(chain[, "accept_stat__"]),
+    stepsize = mean(chain[, "stepsize__"]),
+    treedepth = mean(chain[, "treedepth__"]),
+    n_leapfrog = mean(chain[, "n_leapfrog__"]),
+    divergent = sum(chain[, "divergent__"]),
+    energy = mean(chain[, "energy__"])
+  )
+})
+
+# Combine to a single data frame
+summary_df <- do.call(rbind, summary_list)
+summary_df$chain <- paste("Chain", 1:nrow(summary_df))
+
+# Compute the overall summary
+overall <- data.frame(
+  accept_stat = mean(summary_df$accept_stat),
+  stepsize = mean(summary_df$stepsize),
+  treedepth = mean(summary_df$treedepth),
+  n_leapfrog = mean(summary_df$n_leapfrog),
+  divergent = sum(summary_df$divergent),
+  energy = mean(summary_df$energy),
+  chain = "All Chains"
+)
+
+# Final table (reorder columns)
+final_summary <- rbind(overall, summary_df)[, c("chain", "accept_stat", "stepsize", "treedepth", "n_leapfrog", "divergent", "energy")]
+
+# Print as LaTeX table
+knitr::kable(final_summary, format = "latex", digits = 4, caption = "Chains Convergence Summary", booktabs = TRUE)
+
+####It can be extracted through shiny###
+launch_shinystan(fit)
+###PPC Plots###
+parms<-rstan::extract(fit)
+y<-parms$y_rep
+library(bayesplot)
+color_scheme_set("viridisC")
+
+ppc_ecdf_overlay(z, y[1:200, ])
+ppc_dens_overlay(z, y[1300:1400,], alpha = 1.75)
+#### Trace Plot####
+trace<- stan_trace(fit, pars = c("nu","w","lam","lp__"), alpha=1)
+trace1<- trace + scale_color_manual(values = c( "blue", "green", "purple","black"))
+
+trace + scale_color_brewer(type = "div") + theme(legend.position = "top")
+
+facet_style<- theme(strip.background = ggplot2::element_rect(fill = "gold"), 
+                    strip.text = ggplot2::element_text(size = 8, color = "black"))
+
+(trace<- trace1 + facet_style) # very good for report
+
+###Auto Correlation####
+color_scheme_set("brewer-Spectral")
+
+(p <- mcmc_acf_bar(fit, pars = c("nu","w","lam","lp__"), alpha=2))
+
+# add horiztonal dashed line at 0.5
+p + hline_at(0.5, linetype = 2, size = 0.15, alpha=2, color = "red")
+#ggsave("auto_corr_plot.pdf", width = 5, height = 5)
+
+####Pairs Plot ###
+
+posterior_samples <- as.array(fit)
+
+# Create pairs plot for the parameters of interest
+mcmc_pairs(posterior_samples, pars = c("nu", "w", "lam"))
+
+
+####Prior and Posterior Plots Together##
+posterior_samples <- extract(model1)
+posterior_samples$w
+
+set.seed(123)
+prior_draws <- data.frame(
+  nu = rgamma(10000, 1.5, 10),
+  w  = rgamma(10000, 0.5, 0.5),
+  lam = rgamma(10000, 0.5, 0.5)
+)
+
+library(ggplot2)
+
+# Example for `nu`
+
+
+nu<-ggplot() +
+  geom_density(data = prior_draws, aes(x = nu), fill = "skyblue", alpha = 0.5) +
+  geom_density(data = as.data.frame(posterior_samples), aes(x = nu), fill="red",color = "red") +
+  labs(title = expression("Prior (" * blue * ") vs Posterior (" * red * ") for " * nu),
+       x = expression(nu),
+       y = "Density") +
+  theme_minimal()
+
+
+w<-ggplot() +
+  geom_density(data =prior_draws , aes(x = w), fill = "skyblue", alpha = 0.5) +
+  geom_density(data = as.data.frame(posterior_samples), aes(x = w), fill="red",color = "red") +
+  labs(
+    title = expression("Prior (" * blue * ") vs Posterior (" * red * ") for " * omega),
+    x = expression(omega),
+    y = "Density"
+  ) +
+  theme_minimal()
+
+# Truncate prior to match posterior scale
+prior_filtered <- subset(prior_draws, lam < 0.5)
+lam<-ggplot() +
+  geom_density(data = prior_filtered, aes(x = lam), fill = "skyblue", alpha = 0.5) +
+  geom_density(data = as.data.frame(posterior_samples), aes(x = lam),fill="red", color = "red") +
+  labs(title = expression("Prior (" * blue * ") vs Posterior (" * red * ") for " * lambda),
+       x = expression(lambda),
+       y = "Density") +
+  theme_minimal()
+
+
+
+#####Sensitivity Analysis###
+install.packages("priorsense")
+library(priorsense)
+
+model1<- stan(model_code = Noted3,data = data_list, 
+              iter = 10000,chains = 3,seed=1234)
+
+
+powerscale_plot_dens(model1)
+powerscale_plot_ecdf(model1)
+
+
+####Simulation###
+# Load necessary libraries
+rm(list = ls())
+gc()  # Garbage collection
+library(rstan)
+library(ggplot2)
+library(bayesplot)
+library(dplyr)
+
+# Set Stan options
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+# Define true parameter values
+sc1<-c(ν = 0.25,ω = 2.0,λ = 1.75)
+sc2<-c(ν = 0.5,ω = 2.25,λ = 1.5) ##done
+sc3<-c (ν = 0.05,ω = 1.25,λ = 0.5)
+sc4<-c(ν = 0.4,ω = 1.5,λ = 1.25)
+
+true_nu <- 0.05
+true_omega <- 1.25
+true_lambda <- 0.5
+N <- 80 # Sample size
+n_sim <- 500 # Number of simulations
+
+# Function to simulate data from NOTED_rng (implement in R since we can't use Stan RNG in data generation directly)
+NOTED_rng <- function(nu, omega, lambda, N) {
+  u <- runif(N, 0, 1)
+  term1 <- -(1 / lambda)
+  term2 <- 1 - (u / (1 + nu)^omega)^(1 / omega) * (nu + 1)
+  term3 <- 1 - (u / (1 + nu)^omega)^(1 / omega)
+  z <- term1 * log(term2 / term3)
+  return(z)
+}
+
+# Store results
+# Store results
+results <- data.frame(
+  sim = integer(),
+  est_nu = numeric(),    lci_nu = numeric(),    uci_nu = numeric(),
+  est_w = numeric(),     lci_w = numeric(),     uci_w = numeric(),
+  est_lam = numeric(),   lci_lam = numeric(),   uci_lam = numeric()
+)
+
+# Run Monte Carlo simulation
+set.seed(123)
+for (sim in 1:n_sim) {
+  # Generate synthetic data using true parameters
+  z_sim <- NOTED_rng(true_nu, true_omega, true_lambda, N)
+  
+  # Prepare data list for Stan
+  stan_data <- list(N = N, z = z_sim)
+  
+  # Run MCMC sampling
+  fit <- stan(model_code = Noted, data = stan_data, 
+              iter = 4000, chains = 3, seed = 1234)
+  
+  # Extract posterior summary
+  post_sum <- summary(fit)$summary
+  
+  # Means and 95% credible intervals
+  est_nu <- post_sum["nu", "mean"]
+  lci_nu <- post_sum["nu", "2.5%"]
+  uci_nu <- post_sum["nu", "97.5%"]
+  
+  est_w <- post_sum["w", "mean"]
+  lci_w <- post_sum["w", "2.5%"]
+  uci_w <- post_sum["w", "97.5%"]
+  
+  est_lam <- post_sum["lam", "mean"]
+  lci_lam <- post_sum["lam", "2.5%"]
+  uci_lam <- post_sum["lam", "97.5%"]
+  
+  # Append to results
+  results <- rbind(
+    results,
+    data.frame(
+      sim = sim,
+      est_nu = est_nu, lci_nu = lci_nu, uci_nu = uci_nu,
+      est_w = est_w, lci_w = lci_w, uci_w = uci_w,
+      est_lam = est_lam, lci_lam = lci_lam, uci_lam = uci_lam
+    )
+  )
+  
+  if (sim %% 10 == 0) cat("Completed:", sim, "simulations\n")
+}
+
+sim1_80<-data.frame(results)
+sim1_80_set2<-data.frame(results)
+sim1_160_set2<-data.frame(results)
+sim1_80_set3<-data.frame(results)
+
+####Simulation Table ####
+# Create results summary table
+summary_table <- data.frame(
+  Parameter = c("nu", "omega", "lambda"),
+  
+  Mean = c(mean(results$est_nu),
+           mean(results$est_w),
+           mean(results$est_lam)),
+  
+  `Mean 2.5% CI` = c(mean(results$lci_nu),
+                     mean(results$lci_w),
+                     mean(results$lci_lam)),
+  
+  `Mean 97.5% CI` = c(mean(results$uci_nu),
+                      mean(results$uci_w),
+                      mean(results$uci_lam)),
+  
+  Bias = c(mean(results$est_nu) - true_nu,
+           mean(results$est_w) - true_omega,
+           mean(results$est_lam) - true_lambda),
+  
+  MSE = c(mean((results$est_nu - true_nu)^2),
+          mean((results$est_w - true_omega)^2),
+          mean((results$est_lam - true_lambda)^2))
+)
+
+
+# Round only numeric columns
+summary_table_rounded <- summary_table
+summary_table_rounded[ , -1] <- round(summary_table[ , -1], 4)
+
+# Print the result
+print(summary_table_rounded)
+
+
+# Load library
+library(writexl)
+
+# Export to Excel
+write_xlsx(summary_table_rounded_80_set3, path = "summary_results_Sec1_80_set3.xlsx")
+
+
+# View the table
+print(round(summary_table, 4))
+
+####prior sensitivity####
+library(ggplot2)
+library(bayesplot)
+###Prior PRedective Check###
+PriorPredective<-'functions {
+  real NOTED_rng(real nu, real w, real lam) {
+    real u = uniform_rng(0, 1);
+    real term1 = -(1 / lam);
+    real term2 = 1 - pow(u / pow((1 + nu), w), 1 / w) * (nu + 1);
+    real term3 = 1 - pow(u / pow((1 + nu), w), 1 / w);
+    real d = term1 * log(term2 / term3);
+    return d;
+  }
+  
+}
+
+data {
+  int<lower=0> N;  // Number of prior predictive draws
+}
+
+generated quantities {
+real nu_sim = gamma_rng(1.5, 10);
+  real w_sim = gamma_rng(.5, .5);
+  real lam_sim = gamma_rng(0.5, 0.5);
+  vector[N] y_rep;
+  
+ for (i in 1:N) {
+    y_rep[i] = NOTED_rng(nu_sim, w_sim, lam_sim);
+  }
+}'
+
+# Prepare data for prior predictive check - N is number of samples, z empty or zeros but unused
+data_prior_pred <- list(N = 100)
+chains <- 3
+seeds <- c(123, 234, 567)  # distinct seeds for reproducibility  # same seed if you want identical results
+fits <- vector("list", chains)
+set.seed(132)
+for (i in seq_len(chains)) {
+  fits[[i]] <- stan(
+    model_code = PriorPredective,
+    data = data_prior_pred, ##all zero; just supplying dummy data
+    chains = 1,
+    iter = 2000,
+    seed = seeds[i],
+    chain_id = i,
+    algorithm = "Fixed_param",
+    refresh = 0
+  )
+}
+fit_prior <- rstan::sflist2stanfit(fits)
+
+# Extract prior predictive samples
+y_rep1 <- extract(fit_prior)$y_rep[1, ]
+
+hist(y_rep1, breaks = 50, col = "skyblue", border = "white",
+     main = "Prior Predictive from Stan", xlab = "y", freq = FALSE)
+
+# Add kernel density line
+lines(density(y_rep1), col = "blue", lwd = 2)
+
+# Calculate and add mean line
+mean_val <- mean(y_rep1)
+abline(v = mean_val, col = "red", lwd = 2, lty = 2)
+
+# Add legend
+legend("topright", legend = c("Density", "Mean"), col = c("blue", "red"),
+       lwd = 2, lty = c(1, 2))
+
+
+################################################################
+#### Plot of histogram of y_rep with histogram of##### 
+###different combination of parameter values of Noted distribution###
+#####################################################################
+####y_rep and different histogram###
+library(rstan)
+library(ggplot2)
+
+
+set.seed(42)
+
+# Prepare a data frame for y_rep for ggplot##
+library(ggplot2)
+library(dplyr)
+
+NOTED_rng <- function(nu, omega, lambda, N) {
+  u <- runif(N, 0, 1)
+  term1 <- -(1 / lambda)
+  term2 <- 1 - (u / (1 + nu)^omega)^(1 / omega) * (nu + 1)
+  term3 <- 1 - (u / (1 + nu)^omega)^(1 / omega)
+  z <- term1 * log(term2 / term3)
+  return(z)
+}
+
+params <- list(
+  c(nu=0.7, omega=5.0, lambda=4.5),
+  c(nu=0.5, omega=3.0, lambda=0.8),
+  c(nu=1.0, omega=0.5, lambda=5.0),
+  c(nu=2.2, omega=2.0, lambda=1.7),
+  c(nu=5.0, omega=2.5, lambda=7.5)
+)
+
+set.seed(12)
+N <- 1000
+
+# Simulated y_rep from Stan prior predictive (replace with your actual y_rep extraction)
+
+df_yrep <- data.frame(
+  sample = y_rep,
+  param = "Stan prior predictive"
+)
+
+# Use parseable expressions for Greek letters
+df_noted <- do.call(rbind, lapply(seq_along(params), function(i) {
+  p <- params[[i]]
+  samp <- NOTED_rng(p["nu"], p["omega"], p["lambda"], N)
+  label <- sprintf("nu==%.1f*','~omega==%.1f*','~lambda==%.1f", p["nu"], p["omega"], p["lambda"])
+  data.frame(
+    sample = samp,
+    param = label
+  )
+}))
+
+# Update y_rep label
+df_yrep <- data.frame(
+  sample = y_rep,
+  param = "Stan~prior~predictive"
+)
+
+df_all <- rbind(df_yrep, df_noted)
+
+# Factor to preserve ordering
+df_all$param <- factor(df_all$param)
+
+# Recompute means
+means_df <- df_all %>%
+  group_by(param) %>%
+  summarise(mean_val = mean(sample))
+
+# Now plot using `label = scales::label_parse()` to parse math expressions
+ggplot(df_all, aes(x = sample)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.2, fill = "skyblue", color = "white") +
+  geom_density(color = "blue", size = 1) +
+  geom_vline(data = means_df, aes(xintercept = mean_val), color = "red", linetype = "dashed", size = 1) +
+  facet_wrap(~ param, scales = "free", labeller = label_parsed) +
+  labs(title = "",
+       x = "Sample values", y = "Density") +
+  theme_minimal()
+
+
+
+#######################
+######Alternative Priors###
+############################
+PriorPredective<-'functions {
+  real NOTED_rng(real nu, real w, real lam) {
+    real u = uniform_rng(0, 1);
+    real term1 = -(1 / lam);
+    real term2 = 1 - pow(u / pow((1 + nu), w), 1 / w) * (nu + 1);
+    real term3 = 1 - pow(u / pow((1 + nu), w), 1 / w);
+    real d = term1 * log(term2 / term3);
+    return d;
+  }
+  
+}
+
+data {
+  int<lower=0> N;  // Number of prior predictive draws
+}
+
+generated quantities {
+real nu_sim = gamma_rng(0.5, 0.5);
+  real w_sim = gamma_rng(0.5, 0.5);
+  real lam_sim = gamma_rng(0.5, 0.5);
+  vector[N] y_rep;
+  
+ for (i in 1:N) {
+    y_rep[i] = NOTED_rng(nu_sim, w_sim, lam_sim);
+  }
+}'
+
+
+library(rstan)
+
+# Prepare data for prior predictive check - N is number of samples, z empty or zeros but unused
+data_prior_pred <- list(N = 100)
+
+
+
+chains <- 3
+seeds <- c(123, 234, 567)  # distinct seeds for reproducibility  # same seed if you want identical results
+fits <- vector("list", chains)
+set.seed(132)
+for (i in seq_len(chains)) {
+  fits[[i]] <- stan(
+    model_code = PriorPredective,
+    data = data_prior_pred, ##all zero; just supplying dummy data
+    chains = 1,
+    iter = 2000,
+    seed = seeds[i],
+    chain_id = i,
+    algorithm = "Fixed_param",
+    refresh = 0
+  )
+}
+fit_prior <- rstan::sflist2stanfit(fits)
+
+# Extract prior predictive samples
+y_rep2 <- extract(fit_prior)$y_rep[1, ]
+
+hist(y_rep2, breaks = 50, col = "skyblue", border = "white",
+     main = "Prior Predictive from Stan", xlab = "y", freq = FALSE)
+
+# Add kernel density line
+lines(density(y_rep2), col = "blue", lwd = 2)
+
+# Calculate and add mean line
+mean_val <- mean(y_rep2)
+abline(v = mean_val, col = "red", lwd = 2, lty = 2)
+
+# Add legend
+legend("topright", legend = c("Density", "Mean"), col = c("blue", "red"),
+       lwd = 2, lty = c(1, 2))
+
+
+################################################################
+#### Plot of histogram of y_rep for alternative priors with histogram of##### 
+###different combination of parameter values of Noted distribution###
+#####################################################################
+####y_rep and different histogram###
+
+library(rstan)
+library(ggplot2)
+
+
+set.seed(42)
+
+# Prepare a data frame for y_rep for ggplot##
+library(ggplot2)
+library(dplyr)
+
+NOTED_rng <- function(nu, omega, lambda, N) {
+  u <- runif(N, 0, 1)
+  term1 <- -(1 / lambda)
+  term2 <- 1 - (u / (1 + nu)^omega)^(1 / omega) * (nu + 1)
+  term3 <- 1 - (u / (1 + nu)^omega)^(1 / omega)
+  z <- term1 * log(term2 / term3)
+  return(z)
+}
+
+params <- list(
+  c(nu=0.7, omega=5.0, lambda=4.5),
+  c(nu=0.5, omega=3.0, lambda=0.8),
+  c(nu=1.0, omega=0.5, lambda=5.0),
+  c(nu=2.2, omega=2.0, lambda=1.7),
+  c(nu=5.0, omega=2.5, lambda=7.5)
+)
+
+set.seed(12)
+N <- 1000
+
+# Simulated y_rep from Stan prior predictive (replace with your actual y_rep extraction)
+
+df_yrep <- data.frame(
+  sample = y_rep,
+  param = "Stan prior predictive"
+)
+
+# Use parseable expressions for Greek letters
+df_noted <- do.call(rbind, lapply(seq_along(params), function(i) {
+  p <- params[[i]]
+  samp <- NOTED_rng(p["nu"], p["omega"], p["lambda"], N)
+  label <- sprintf("nu==%.1f*','~omega==%.1f*','~lambda==%.1f", p["nu"], p["omega"], p["lambda"])
+  data.frame(
+    sample = samp,
+    param = label
+  )
+}))
+
+# Update y_rep label
+df_yrep <- data.frame(
+  sample = y_rep,
+  param = "Stan~prior~predictive"
+)
+
+df_all <- rbind(df_yrep, df_noted)
+
+# Factor to preserve ordering
+df_all$param <- factor(df_all$param)
+
+# Recompute means
+means_df <- df_all %>%
+  group_by(param) %>%
+  summarise(mean_val = mean(sample))
+
+# Now plot using `label = scales::label_parse()` to parse math expressions
+ggplot(df_all, aes(x = sample)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.2, fill = "skyblue", color = "white") +
+  geom_density(color = "blue", size = 1) +
+  geom_vline(data = means_df, aes(xintercept = mean_val), color = "red", linetype = "dashed", size = 1) +
+  facet_wrap(~ param, scales = "free", labeller = label_parsed) +
+  labs(title = "",
+       x = "Sample values", y = "Density") +
+  theme_minimal()
+
+
+#######################Some large of nu=1,1 ####
+PriorPredective<-'functions {
+  real NOTED_rng(real nu, real w, real lam) {
+    real u = uniform_rng(0, 1);
+    real term1 = -(1 / lam);
+    real term2 = 1 - pow(u / pow((1 + nu), w), 1 / w) * (nu + 1);
+    real term3 = 1 - pow(u / pow((1 + nu), w), 1 / w);
+    real d = term1 * log(term2 / term3);
+    return d;
+  }
+  
+}
+
+data {
+  int<lower=0> N;  // Number of prior predictive draws
+}
+
+generated quantities {
+real nu_sim = gamma_rng(1, 1);
+  real w_sim = gamma_rng(0.5, 0.5);
+  real lam_sim = gamma_rng(0.5, 0.5);
+  vector[N] y_rep;
+  
+ for (i in 1:N) {
+    y_rep[i] = NOTED_rng(nu_sim, w_sim, lam_sim);
+  }
+}'
+
+
+# Prepare data for prior predictive check - N is number of samples, z empty or zeros but unused
+data_prior_pred <- list(N = 100)
+
+chains <- 3
+seeds <- c(123, 234, 567)  # distinct seeds for reproducibility  # same seed if you want identical results
+fits <- vector("list", chains)
+set.seed(132)
+for (i in seq_len(chains)) {
+  fits[[i]] <- stan(
+    model_code = PriorPredective,
+    data = data_prior_pred, ##all zero; just supplying dummy data
+    chains = 1,
+    iter = 2000,
+    seed = seeds[i],
+    chain_id = i,
+    algorithm = "Fixed_param",
+    refresh = 0
+  )
+}
+fit_prior <- rstan::sflist2stanfit(fits)
+
+# Extract prior predictive samples
+y_rep3 <- extract(fit_prior)$y_rep[1, ]
+
+hist(y_rep3, breaks = 50, col = "skyblue", border = "white",
+     main = "Prior Predictive from Stan", xlab = "y", freq = FALSE)
+
+# Add kernel density line
+lines(density(y_rep3), col = "blue", lwd = 2)
+
+# Calculate and add mean line
+mean_val <- mean(y_rep3)
+abline(v = mean_val, col = "red", lwd = 2, lty = 2)
+
+# Add legend
+legend("topright", legend = c("Density", "Mean"), col = c("blue", "red"),
+       lwd = 2, lty = c(1, 2))
+
+
+################################################################
+#### Plot of histogram of y_rep for alternative priors with histogram of##### 
+###different combination of parameter values of Noted distribution###
+#####################################################################
+####y_rep and different histogram###
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+combine<-data.frame(y_rep1,y_rep2,y_rep3)
+
+# Define the custom RNG function
+NOTED_rng <- function(nu, omega, lambda, N) {
+  u <- runif(N, 0, 1)
+  term1 <- -(1 / lambda)
+  term2 <- 1 - (u / (1 + nu)^omega)^(1 / omega) * (nu + 1)
+  term3 <- 1 - (u / (1 + nu)^omega)^(1 / omega)
+  z <- term1 * log(term2 / term3)
+  return(z)
+}
+
+# Prior parameter sets
+params <- list(
+  c(nu = 0.7, omega = 5.0, lambda = 4.5),
+  c(nu = 0.5, omega = 3.0, lambda = 0.8),
+  c(nu = 2.2, omega = 2.0, lambda = 1.7),
+  c(nu = 5.0, omega = 2.5, lambda = 7.5)
+)
+
+# Simulate NOTED samples
+set.seed(123)
+N <- 10000
+param_labels <- c(
+  "nu==0.7*','~omega==5*','~lambda==4.5",
+  "nu==0.5*','~omega==3*','~lambda==0.8",
+  "nu==2.2*','~omega==2*','~lambda==1.7",
+  "nu==5*','~omega==2.5*','~lambda==7.5"
+)
+
+# Convert y_rep to long format
+long_rep <- combine %>%
+  pivot_longer(cols = everything(), names_to = "param", values_to = "sample") %>%
+  mutate(source = "y_rep")
+
+# Create NOTED samples with labels
+long_noted <- lapply(seq_along(params), function(i) {
+  p <- params[[i]]
+  data.frame(
+    sample = NOTED_rng(p["nu"], p["omega"], p["lambda"], N),
+    param = param_labels[i],
+    source = "NOTED"
+  )
+}) %>% bind_rows()
+
+# Combine both data sources
+combined_df <- bind_rows(long_rep, long_noted) %>%
+  mutate(
+    facet_group = ifelse(source == "y_rep", param, "NOTED"),
+    param = factor(param, levels = param_labels)
+  )
+
+# Set facet group labels
+facet_labels <- c(
+  y_rep1 = "Prior Predictive with Priors 1",
+  y_rep2 = "Prior Predictive with Priors 2",
+  y_rep3 = "Prior Predictive with Priors 3",
+  NOTED  = "NOTED (Overlay)"
+)
+
+
+# Assign factor levels with custom labels
+combined_df <- combined_df %>%
+  mutate(facet_group = factor(facet_group, levels = names(facet_labels)))
+
+# Plot
+ggplot(combined_df, aes(x = sample)) +
+  geom_density(data = filter(combined_df, source == "y_rep"),
+               fill = "skyblue", alpha = 0.4, color = "blue") +
+  geom_density(data = filter(combined_df, source == "NOTED"),
+               aes(color = param), size = 1, show.legend = TRUE) +
+  facet_wrap(~ facet_group,
+             labeller = labeller(facet_group = facet_labels),
+             ncol = 2,
+             scales = "free") +
+  labs(
+    title = "",
+    x = "Sample values",
+    y = "Density",
+    color = "Parameters"
+  ) +
+  scale_color_manual(
+    values = c("red", "green4", "purple", "orange"),
+    labels = parse(text = param_labels)
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = c(0.78, 0.25),
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    legend.key.height = unit(0.3, "cm"),
+    legend.key.width = unit(0.4, "cm")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 0.9)))
+###########################################################################
+
+
+
+
